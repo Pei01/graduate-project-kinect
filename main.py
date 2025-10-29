@@ -28,6 +28,24 @@ isRightHandUp = False
 def index():
     return "Kinect Server Running"
 
+
+def get_closest_body(body_frame):
+    num_bodies = body_frame.get_num_bodies()
+    if num_bodies == 0:
+        return None
+    
+    min_z = float('inf')
+    closest_id = None
+
+    for body_id in range(num_bodies):
+        skeleton_3d = body_frame.get_body(body_id).numpy()
+        spine_base_z = skeleton_3d[pykinect.K4ABT_JOINT_SPINE_BASE, 2]
+        if spine_base_z < min_z:
+            min_z = spine_base_z
+            closest_id = body_id
+
+    return closest_id
+
 def detect_hand_up():
     global isLeftHandUp, isRightHandUp
     while True:
@@ -36,34 +54,35 @@ def detect_hand_up():
         body_frame = bodyTracker.update(capture)
 
         # --- 舉手偵測 ---
-        for body_id in range(body_frame.get_num_bodies()):
-            # joints in 3D (mm)
-            skeleton_3d = body_frame.get_body(body_id).numpy()
+        body_id = get_closest_body(body_frame)
 
-            head_y = skeleton_3d[pykinect.K4ABT_JOINT_HEAD, 1]
-            left_hand_y = skeleton_3d[pykinect.K4ABT_JOINT_HAND_LEFT, 1]
-            right_hand_y = skeleton_3d[pykinect.K4ABT_JOINT_HAND_RIGHT, 1]
+        # joints in 3D (mm)
+        skeleton_3d = body_frame.get_body(body_id).numpy()
 
-            # 注意：Y 軸往下，數值小 = 高
-            left_hand_up = left_hand_y < head_y
-            right_hand_up = right_hand_y < head_y
+        head_y = skeleton_3d[pykinect.K4ABT_JOINT_HEAD, 1]
+        left_hand_y = skeleton_3d[pykinect.K4ABT_JOINT_HAND_LEFT, 1]
+        right_hand_y = skeleton_3d[pykinect.K4ABT_JOINT_HAND_RIGHT, 1]
+
+        # 注意：Y 軸往下，數值小 = 高
+        left_hand_up = left_hand_y < head_y
+        right_hand_up = right_hand_y < head_y
 
 
-            if not left_hand_up and isLeftHandUp:
-                isLeftHandUp = False
+        if not left_hand_up and isLeftHandUp:
+            isLeftHandUp = False
 
-            if not right_hand_up and isRightHandUp:
-                isRightHandUp = False
+        if not right_hand_up and isRightHandUp:
+            isRightHandUp = False
 
-            if left_hand_up and not isLeftHandUp:
-                isLeftHandUp = True
-                print("Left Hand Up")
-                socketio.emit("hand_event", {"side": "left"})
+        if left_hand_up and not isLeftHandUp:
+            isLeftHandUp = True
+            print("Left Hand Up")
+            socketio.emit("hand_event", {"side": "left"})
 
-            if right_hand_up and not isRightHandUp:
-                isRightHandUp = True
-                print("Right Hand Up")
-                socketio.emit("hand_event", {"side": "right"})
+        if right_hand_up and not isRightHandUp:
+            isRightHandUp = True
+            print("Right Hand Up")
+            socketio.emit("hand_event", {"side": "right"})
 
 if __name__ == "__main__":
     socketio.start_background_task(detect_hand_up)
