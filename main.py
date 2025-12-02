@@ -1,10 +1,10 @@
 from flask import Flask 
 from flask_socketio import SocketIO
 import pykinect_azure as pykinect
+import threading
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
-
 
 # 初始化 SDK
 pykinect.initialize_libraries(track_body=True)
@@ -21,8 +21,7 @@ device = pykinect.start_device(config=device_config)
 # 啟動 body tracker
 bodyTracker = pykinect.start_body_tracker()
 
-isLeftHandUp = False
-isRightHandUp = False
+isHandUp = False
 
 @app.route("/")
 def index():
@@ -39,7 +38,7 @@ def get_closest_body(body_frame):
 
     for body_id in range(num_bodies):
         skeleton_3d = body_frame.get_body(body_id).numpy()
-        spine_base_z = skeleton_3d[pykinect.K4ABT_JOINT_SPINE_BASE, 2]
+        spine_base_z = skeleton_3d[pykinect.K4ABT_JOINT_SPINE_NAVEL, 2]
         if spine_base_z < min_z:
             min_z = spine_base_z
             closest_id = body_id
@@ -47,7 +46,7 @@ def get_closest_body(body_frame):
     return closest_id
 
 def detect_hand_up():
-    global isLeftHandUp, isRightHandUp
+    global isHandUp
     while True:
         capture = device.update()
         # 取得影像
@@ -55,6 +54,9 @@ def detect_hand_up():
 
         # --- 舉手偵測 ---
         body_id = get_closest_body(body_frame)
+
+        if body_id is None:
+            continue
 
         # joints in 3D (mm)
         skeleton_3d = body_frame.get_body(body_id).numpy()
@@ -66,24 +68,19 @@ def detect_hand_up():
         # 注意：Y 軸往下，數值小 = 高
         left_hand_up = left_hand_y < head_y
         right_hand_up = right_hand_y < head_y
+        hand_up = left_hand_up or right_hand_up
 
+        if not hand_up and isHandUp:
+            isHandUp = False
 
-        if not left_hand_up and isLeftHandUp:
-            isLeftHandUp = False
-
-        if not right_hand_up and isRightHandUp:
-            isRightHandUp = False
-
-        if left_hand_up and not isLeftHandUp:
-            isLeftHandUp = True
-            print("Left Hand Up")
-            socketio.emit("hand_event", {"side": "left"})
-
-        if right_hand_up and not isRightHandUp:
-            isRightHandUp = True
-            print("Right Hand Up")
-            socketio.emit("hand_event", {"side": "right"})
+        if hand_up and not isHandUp:
+            isHandUp = True
+            socketio.emit("hand_event")
 
 if __name__ == "__main__":
-    socketio.start_background_task(detect_hand_up)
+    # 1. 舉手偵測 Worker (舊功能)
+    hand_up_thread = threading.Thread(target=detect_hand_up)
+    hand_up_thread.daemon = True 
+    hand_up_thread.start()
+
     socketio.run(app, host="0.0.0.0", port=5000)
