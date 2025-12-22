@@ -134,8 +134,8 @@ def kinect_mapping_worker():
     global latest_skeleton_3d 
 
     # 前端畫面尺寸（你可以修改）
-    SCREEN_WIDTH = 396
-    SCREEN_HEIGHT = 859
+    SCREEN_WIDTH = 547.25
+    SCREEN_HEIGHT = 995
 
     # Kinect 空間 normalized 區間（你可以視實測修改）
     KINECT_X_MIN = -0.5
