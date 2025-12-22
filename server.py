@@ -28,19 +28,6 @@ PID = 0x2016
 EP_OUT = 0x03
 EP_IN = 0x81
 
-# --- 狗勾 ASCII Art ---
-DOGE_ART = """
-⠀⠀⠀⢠⡾⠲⠶⣤⣀⣠⣤⣤⣤⡿⠛⠿⡴⠾⠛⢻⡆⠀⠀⠀
-⠀⠀⠀⣼⠁⠀⠀⠀⠉⠁⠀⢀⣿⠐⡿⣿⠿⣶⣤⣤⣷⡀⠀⠀
-⠀⠀⠀⢹⡶⠀⠀⠀⠀⠀⠀⠈⢯⣡⣿⣿⣀⣸⣿⣦⢓⡟⠀⠀
-⠀⠀⢀⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠹⣍⣭⣾⠁⠀⠀
-⠀⣀⣸⣇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣸⣷⣤⡀
-⠈⠉⠹⣏⡁⠀⢸⣿⠀⠀⠀⢀⡀⠀⠀⠀⣿⠆⠀⢀⣸⣇⣀⠀
-⠀⠐⠋⢻⣅⣄⢀⣀⣀⡀⠀⠯⠽⠂⢀⣀⣀⡀⠀⣤⣿⠀⠉⠀
-⠀⠀⠴⠛⠙⣳⠋⠉⠉⠙⣆⠀⠀⢰⡟⠉⠈⠙⢷⠟⠉⠙⠂⠀
-⠀⠀⠀⠀⠀⢻⣄⣠⣤⣴⠟⠛⠛⠛⢧⣤⣤⣀⡾
-"""
-
 # --- 全域變數 ---
 printer_device = None
 
@@ -61,7 +48,7 @@ def get_printer():
         print(f"連線失敗: {e}")
         return None
 
-def execute_print_job(user_name="工作到死的綠色狗勾"):
+def execute_print_job(user_name="狗勾"):
     global printer_device
     
     p = get_printer()
@@ -124,7 +111,7 @@ def execute_print_job(user_name="工作到死的綠色狗勾"):
         draw.text((25, y), "使用者代碼: A-111590001", font=font_body, fill=0); y += 35
         
         # 這裡使用前端傳來的名字！
-        draw.text((25, y), f"行為樣本: {user_name}", font=font_body, fill=0); y += 35
+        draw.text((25, y), f"行為樣本: 工作到死的{user_name}", font=font_body, fill=0); y += 35
         
         draw.text((25, y), "所屬模組: 注意力產出單元", font=font_body, fill=0); y += 35
         draw.text((25, y), "計算期間: 2025/11/01 - 11/30", font=font_body, fill=0); y += 35
@@ -145,7 +132,7 @@ def execute_print_job(user_name="工作到死的綠色狗勾"):
             y = draw_row(y, label, amt)
         
         y = draw_line(y, "-")
-        y = draw_row(y, "產值小計", "$  39,650", font=font_bold); y += 20
+        y = draw_row(y, "產值小計", "$  39,700", font=font_bold); y += 20
 
         # --- (D) 支出 ---
         draw.text((25, y), "【資 料 處 理 與 平 台 成 本】", font=font_bold, fill=0); y += 35
@@ -203,15 +190,6 @@ def execute_print_job(user_name="工作到死的綠色狗勾"):
         draw.text(((WIDTH - w)/2, y), sign_txt, font=font_small, fill=0)
         y += 40
 
-        # --- (H) 狗勾 ASCII Art (使用特殊字體) ---
-        # 計算置中
-        bbox = draw.textbbox((0, 0), DOGE_ART, font=font_doge, spacing=0)
-        doge_w = bbox[2] - bbox[0]
-        doge_x = (WIDTH - doge_w) / 2
-        
-        draw.text((doge_x, y), DOGE_ART, font=font_doge, fill=0, spacing=0)
-        y += (bbox[3] - bbox[1]) + 50 # 加上狗的高度
-
         # ================= 繪圖結束，開始列印 =================
         
         # 裁切圖片
@@ -243,9 +221,9 @@ def handle_print():
     
     # 這裡接收前端傳來的文字，當作「使用者名字」
     # 如果前端沒傳，就用預設的「工作到死的綠色狗勾」
-    user_name = data.get('message', '工作到死的綠色狗勾')
+    user_name = data.get('message', '狗勾')
     if not user_name:
-        user_name = '工作到死的綠色狗勾'
+        user_name = '狗勾'
     
     success, info = execute_print_job(user_name)
     
@@ -256,10 +234,11 @@ def handle_print():
 
 if __name__ == '__main__':
     # 預先連線
-    # get_printer()
-    
-    # print("服務啟動中... Port: 4000")
-    # # 使用 Port 4000 (依照您的設定)
-    # app.run(host='0.0.0.0', port=4000, debug=False, threaded=True)
 
-    execute_print_job()
+    get_printer()
+    
+    print("服務啟動中... Port: 4000")
+    # 使用 Port 4000 (依照您的設定)
+    app.run(host='0.0.0.0', port=4000, debug=False, threaded=True)
+
+    # execute_print_job()
