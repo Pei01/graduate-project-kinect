@@ -1,0 +1,6 @@
+flask
+flask-socketio
+numpy
+pykinect-azure
+# 如果你有用到 eventlet 或 gevent 作為 Socket.IO 的伺服器，建議加上：
+eventlet
