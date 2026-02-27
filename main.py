@@ -19,8 +19,8 @@ except Exception as e:
 # 攝影機優化設定
 device_config = pykinect.default_configuration
 device_config.color_resolution = pykinect.K4A_COLOR_RESOLUTION_720P
-device_config.depth_mode = pykinect.K4A_DEPTH_MODE_NFOV_UNBINNED
-device_config.camera_fps = pykinect.K4A_FRAMES_PER_SECOND_15 
+device_config.depth_mode = pykinect.K4A_DEPTH_MODE_NFOV_2X2BINNED
+device_config.camera_fps = pykinect.K4A_FRAMES_PER_SECOND_30
 
 # 啟動裝置
 try:
@@ -74,7 +74,6 @@ def kinect_data_acquisition_worker():
             del body_frame
         except Exception:
             pass
-        time.sleep(0.01)
 
 def detect_hand_worker():
     """【2. 舉手偵測 Worker】單獨處理手部邏輯"""
@@ -104,7 +103,7 @@ def detect_hand_worker():
                 
         except Exception:
             pass
-        time.sleep(0.05)
+        time.sleep(0.016)
 
 def detect_kick_worker():
     """【3. 踢腿偵測 Worker】單獨處理腿部邏輯"""
@@ -149,7 +148,7 @@ def detect_kick_worker():
                     
         except Exception:
             pass
-        time.sleep(0.03)
+        time.sleep(0.016)
 
 if __name__ == "__main__":
     workers = [
