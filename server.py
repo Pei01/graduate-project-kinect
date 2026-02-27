@@ -93,33 +93,60 @@ def execute_print_job(watch_seconds=10, watched_percent=50):
 
     try:
         # ================= 繪圖邏輯開始 =================
-        WIDTH = 576
+        WIDTH = 512
         HEIGHT = 2000
+        LEFT = 20        # 左邊距
+        RIGHT = 500      # 右邊界 (512 - 12px 右留白)
         image = Image.new('RGB', (WIDTH, HEIGHT), (255, 255, 255))
         draw = ImageDraw.Draw(image)
 
         try:
             path_msjh = "C:\\Windows\\Fonts\\msjh.ttc"
-            font_title = ImageFont.truetype(path_msjh, 42)
-            font_header = ImageFont.truetype(path_msjh, 32)
-            font_body = ImageFont.truetype(path_msjh, 24)
-            font_bold = ImageFont.truetype(path_msjh, 26)
-            font_small = ImageFont.truetype(path_msjh, 20)
-            font_big_money = ImageFont.truetype(path_msjh, 48)
+            font_title = ImageFont.truetype(path_msjh, 36)
+            font_header = ImageFont.truetype(path_msjh, 28)
+            font_body = ImageFont.truetype(path_msjh, 22)
+            font_bold = ImageFont.truetype(path_msjh, 24)
+            font_small = ImageFont.truetype(path_msjh, 19)
+            font_big_money = ImageFont.truetype(path_msjh, 42)
         except:
             print("字體載入失敗，請確認 Windows 字型資料夾")
             return False, "字體錯誤"
 
         def draw_line(y_pos, style="="):
-            text = "=" * 46 if style == "=" else "-" * 46
-            draw.text((20, y_pos), text, font=font_body, fill=0)
+            char = "=" if style == "=" else "-"
+            sep = ""
+            while draw.textlength(sep + char, font=font_body) < (RIGHT - LEFT):
+                sep += char
+            draw.text((LEFT, y_pos), sep, font=font_body, fill=0)
             return y_pos + 30
 
         def draw_row(y_pos, label, amount, font=font_body):
-            draw.text((25, y_pos), label, font=font, fill=0)
+            draw.text((LEFT + 5, y_pos), label, font=font, fill=0)
             w = draw.textlength(amount, font=font)
-            draw.text((530 - w, y_pos), amount, font=font, fill=0)
+            draw.text((RIGHT - w, y_pos), amount, font=font, fill=0)
             return y_pos + 35
+
+        def wrap_text(text, font, max_w):
+            lines, current = [], ""
+            for char in text:
+                test = current + char
+                if draw.textlength(test, font=font) <= max_w:
+                    current = test
+                else:
+                    if current:
+                        lines.append(current)
+                    current = char
+            if current:
+                lines.append(current)
+            return lines or [""]
+
+        def draw_wrapped(y_pos, text, font, line_height=30, x=None):
+            if x is None:
+                x = LEFT + 5
+            for line in wrap_text(text, font, RIGHT - x):
+                draw.text((x, y_pos), line, font=font, fill=0)
+                y_pos += line_height
+            return y_pos
 
         # 取得等級資訊
         grade = get_grade(watched_percent)
@@ -139,36 +166,32 @@ def execute_print_job(watch_seconds=10, watched_percent=50):
         text = "[ 注 意 力 有 限 公 司 ]"
         w = draw.textlength(text, font=font_title)
         draw.text(((WIDTH - w) / 2, y), text, font=font_title, fill=0)
-        y += 60
+        y += 55
 
         text = "薪 資 明 細 表"
         w = draw.textlength(text, font=font_header)
         draw.text(((WIDTH - w) / 2, y), text, font=font_header, fill=0)
-        y += 45
+        y += 42
         y = draw_line(y, "=")
         y += 10
 
         # --- (B) 職稱與描述 ---
-        draw.text((25, y), f"職稱：{grade_name}", font=font_bold, fill=0)
-        y += 40
+        y = draw_wrapped(y, f"職稱：{grade_name}", font_bold)
+        y += 8
 
         if len(grade_desc_lines) == 1:
-            draw.text((25, y), f"『{grade_desc_lines[0]}』", font=font_body, fill=0)
-            y += 32
+            y = draw_wrapped(y, f"『{grade_desc_lines[0]}』", font_body)
         else:
-            draw.text((25, y), f"『{grade_desc_lines[0]}", font=font_body, fill=0)
-            y += 32
+            y = draw_wrapped(y, f"『{grade_desc_lines[0]}", font_body)
             for line in grade_desc_lines[1:-1]:
-                draw.text((25, y), line, font=font_body, fill=0)
-                y += 32
-            draw.text((25, y), f"{grade_desc_lines[-1]}』", font=font_body, fill=0)
-            y += 32
+                y = draw_wrapped(y, line, font_body)
+            y = draw_wrapped(y, f"{grade_desc_lines[-1]}』", font_body)
         y += 10
 
         # --- (C) 列印日期 ---
         now_str = datetime.datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
-        draw.text((25, y), f"列印日期: {now_str}", font=font_body, fill=0)
-        y += 35
+        y = draw_wrapped(y, f"列印日期: {now_str}", font_body)
+        y += 5
         y = draw_line(y, "=")
         y += 10
 
@@ -201,17 +224,17 @@ def execute_print_job(watch_seconds=10, watched_percent=50):
 
         # --- (F) 實發金額 ---
         y = draw_line(y, "=")
-        draw.text((25, y + 5), "實 發 金 額", font=font_header, fill=0)
+        draw.text((LEFT + 5, y + 5), "實 發 金 額", font=font_header, fill=0)
         amt_str = f"$  {net}"
         w = draw.textlength(amt_str, font=font_big_money)
-        draw.text((530 - w, y - 5), amt_str, font=font_big_money, fill=0)
-        y += 65
+        draw.text((RIGHT - w, y - 5), amt_str, font=font_big_money, fill=0)
+        y += 60
         y = draw_line(y, "=")
         y += 15
 
         # --- (G) 備註 ---
-        draw.text((25, y), "備註：", font=font_small, fill=0)
-        y += 28
+        draw.text((LEFT + 5, y), "備註：", font=font_small, fill=0)
+        y += 26
         notes = [
             "1. 本注意力產出已完成轉換與商業化流程。",
             "2. 相關資料將持續用於系統優化與預測模型訓練。",
@@ -219,25 +242,24 @@ def execute_print_job(watch_seconds=10, watched_percent=50):
             "4. 本單據不構成僱傭關係證明。",
         ]
         for note in notes:
-            draw.text((25, y), note, font=font_small, fill=0)
-            y += 25
+            y = draw_wrapped(y, note, font_small, line_height=24)
         y += 20
 
         # --- (H) 簽名檔 ---
         footer = "** 感 謝 您 的 專 注 投 入 **"
         w = draw.textlength(footer, font=font_bold)
         draw.text(((WIDTH - w) / 2, y), footer, font=font_bold, fill=0)
-        y += 55
+        y += 50
 
         sign = "_____________"
         w = draw.textlength(sign, font=font_body)
         draw.text(((WIDTH - w) / 2, y), sign, font=font_body, fill=0)
-        y += 30
+        y += 28
 
         sign_txt = "(簽收欄)"
         w = draw.textlength(sign_txt, font=font_small)
         draw.text(((WIDTH - w) / 2, y), sign_txt, font=font_small, fill=0)
-        y += 40
+        y += 38
 
         y = draw_line(y, "-")
         y += 20
