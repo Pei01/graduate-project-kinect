@@ -43,9 +43,9 @@ SMOOTH_THRESHOLD = 3  # 需幾幀確認才觸發
 FRAME_INTERVAL = 1.0 / 30  # 幀率限制，對應設定的 30fps
 
 # 踢腿門檻（mm）
-KICK_REL_THRESHOLD = 400    # 觸發：腳踝與髖部垂直距離小於此值
-KICK_RESET_THRESHOLD = 600  # 重置：兩腳都須大於此值（縮小滯後帶，原為 700mm）
-KNEE_ANGLE_THRESHOLD = 140  # 膝蓋角度門檻（度），大於此值才算前踢（過濾高抬腿）
+KICK_REL_THRESHOLD = 650    # 觸發：腳踝與髖部垂直距離小於此值
+KICK_RESET_THRESHOLD = 700  # 重置：兩腳都須大於此值（縮小滯後帶，原為 700mm）
+KNEE_ANGLE_THRESHOLD = 160  # 膝蓋角度門檻（度），大於此值才算前踢（過濾高抬腿）
 
 
 def calc_knee_angle(skeleton, side='left'):
