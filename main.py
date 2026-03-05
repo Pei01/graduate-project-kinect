@@ -40,6 +40,8 @@ isKicking = False
 SMOOTH_WINDOW = 5     # 滑動窗口幀數
 SMOOTH_THRESHOLD = 3  # 需幾幀確認才觸發
 
+FRAME_INTERVAL = 1.0 / 30  # 幀率限制，對應設定的 30fps
+
 # 踢腿門檻（mm）
 KICK_REL_THRESHOLD = 400    # 觸發：腳踝與髖部垂直距離小於此值
 KICK_RESET_THRESHOLD = 600  # 重置：兩腳都須大於此值（縮小滯後帶，原為 700mm）
@@ -81,7 +83,18 @@ def kinect_data_acquisition_worker():
     """【1. 資料獲取 Worker】負責抓取硬體數據，並通知偵測 workers"""
     global latest_skeleton_3d
     last_status = False
+    last_frame_time = 0.0
+
     while True:
+        # 幀率限制：確保不超過 30fps，避免 body tracker enqueue 佇列滿溢
+        now = time.time()
+        elapsed = now - last_frame_time
+        if elapsed < FRAME_INTERVAL:
+            time.sleep(FRAME_INTERVAL - elapsed)
+        last_frame_time = time.time()
+
+        capture = None
+        body_frame = None
         try:
             capture = device.update()
             body_frame = bodyTracker.update(capture)
@@ -102,10 +115,15 @@ def kinect_data_acquisition_worker():
                 # 通知所有等待的偵測 workers 有新幀到來
                 skeleton_condition.notify_all()
 
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "enqueue" in err_msg or "timeout" in err_msg:
+                # body tracker 佇列滿：略過此幀，等久一點讓 GPU 消化
+                time.sleep(0.05)
+            # 其他錯誤靜默略過
+        finally:
             del capture
             del body_frame
-        except Exception:
-            pass
 
 
 def detect_hand_worker():
