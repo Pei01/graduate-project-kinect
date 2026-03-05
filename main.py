@@ -43,6 +43,22 @@ SMOOTH_THRESHOLD = 3  # 需幾幀確認才觸發
 # 踢腿門檻（mm）
 KICK_REL_THRESHOLD = 400    # 觸發：腳踝與髖部垂直距離小於此值
 KICK_RESET_THRESHOLD = 600  # 重置：兩腳都須大於此值（縮小滯後帶，原為 700mm）
+KNEE_ANGLE_THRESHOLD = 140  # 膝蓋角度門檻（度），大於此值才算前踢（過濾高抬腿）
+
+
+def calc_knee_angle(skeleton, side='left'):
+    if side == 'left':
+        hip   = skeleton[pykinect.K4ABT_JOINT_HIP_LEFT, :3]
+        knee  = skeleton[pykinect.K4ABT_JOINT_KNEE_LEFT, :3]
+        ankle = skeleton[pykinect.K4ABT_JOINT_ANKLE_LEFT, :3]
+    else:
+        hip   = skeleton[pykinect.K4ABT_JOINT_HIP_RIGHT, :3]
+        knee  = skeleton[pykinect.K4ABT_JOINT_KNEE_RIGHT, :3]
+        ankle = skeleton[pykinect.K4ABT_JOINT_ANKLE_RIGHT, :3]
+    v1 = hip - knee
+    v2 = ankle - knee
+    cos_a = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-6)
+    return np.degrees(np.arccos(np.clip(cos_a, -1.0, 1.0)))
 
 
 def get_closest_body(body_frame):
@@ -155,14 +171,19 @@ def detect_kick_worker():
 
             l_leg_dist = l_ankle_y - hip_y
             r_leg_dist = r_ankle_y - hip_y
-            min_dist = min(l_leg_dist, r_leg_dist)
 
-            # 定時輸出 Debug Log（門檻值與 log 一致）
+            l_knee_angle = calc_knee_angle(skeleton, 'left')
+            r_knee_angle = calc_knee_angle(skeleton, 'right')
+
+            # 定時輸出 Debug Log
             if time.time() - last_log_time > 2.0:
-                print(f"DEBUG [Kick] 腿部相對距離: {min_dist:.0f}mm (觸發門檻 < {KICK_REL_THRESHOLD}mm)")
+                print(f"DEBUG [Kick] 左腿: dist={l_leg_dist:.0f}mm angle={l_knee_angle:.0f}° / 右腿: dist={r_leg_dist:.0f}mm angle={r_knee_angle:.0f}°")
                 last_log_time = time.time()
 
-            kick_raw = (l_leg_dist < KICK_REL_THRESHOLD) or (r_leg_dist < KICK_REL_THRESHOLD)
+            # 前踢判斷：腳踝高於門檻 AND 膝蓋打直（過濾高抬腿）
+            l_kick = (l_leg_dist < KICK_REL_THRESHOLD) and (l_knee_angle > KNEE_ANGLE_THRESHOLD)
+            r_kick = (r_leg_dist < KICK_REL_THRESHOLD) and (r_knee_angle > KNEE_ANGLE_THRESHOLD)
+            kick_raw = l_kick or r_kick
             kick_states.append(kick_raw)
 
             # 多幀確認踢腿
@@ -170,8 +191,10 @@ def detect_kick_worker():
 
             if confirmed_kick and not isKicking:
                 isKicking = True
-                leg = "left" if l_leg_dist < r_leg_dist else "right"
-                print(f"🦵 [Event] 偵測到踢腿！({leg}) 相對高度差: {min_dist:.0f}mm")
+                leg = "left" if l_kick else "right"
+                kicking_dist = l_leg_dist if l_kick else r_leg_dist
+                kicking_angle = l_knee_angle if l_kick else r_knee_angle
+                print(f"🦵 [Event] 偵測到前踢！({leg}) 距離: {kicking_dist:.0f}mm 膝蓋角: {kicking_angle:.0f}°")
                 socketio.emit("kick_event", {"leg": leg}, namespace='/')
             elif not confirmed_kick and isKicking:
                 if l_leg_dist > KICK_RESET_THRESHOLD and r_leg_dist > KICK_RESET_THRESHOLD:
