@@ -33,8 +33,8 @@ except Exception as e:
 skeleton_condition = threading.Condition()
 latest_skeleton_3d = None
 
-isHandUp = False
-isKicking = False
+isBothHandsUp = False
+isSingleHandUp = False
 
 # 多幀平滑設定
 SMOOTH_WINDOW = 5     # 滑動窗口幀數
@@ -42,25 +42,6 @@ SMOOTH_THRESHOLD = 3  # 需幾幀確認才觸發
 
 FRAME_INTERVAL = 1.0 / 30  # 幀率限制，對應設定的 30fps
 
-# 踢腿門檻（mm）
-KICK_REL_THRESHOLD = 650    # 觸發：腳踝與髖部垂直距離小於此值
-KICK_RESET_THRESHOLD = 700  # 重置：兩腳都須大於此值（縮小滯後帶，原為 700mm）
-KNEE_ANGLE_THRESHOLD = 160  # 膝蓋角度門檻（度），大於此值才算前踢（過濾高抬腿）
-
-
-def calc_knee_angle(skeleton, side='left'):
-    if side == 'left':
-        hip   = skeleton[pykinect.K4ABT_JOINT_HIP_LEFT, :3]
-        knee  = skeleton[pykinect.K4ABT_JOINT_KNEE_LEFT, :3]
-        ankle = skeleton[pykinect.K4ABT_JOINT_ANKLE_LEFT, :3]
-    else:
-        hip   = skeleton[pykinect.K4ABT_JOINT_HIP_RIGHT, :3]
-        knee  = skeleton[pykinect.K4ABT_JOINT_KNEE_RIGHT, :3]
-        ankle = skeleton[pykinect.K4ABT_JOINT_ANKLE_RIGHT, :3]
-    v1 = hip - knee
-    v2 = ankle - knee
-    cos_a = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-6)
-    return np.degrees(np.arccos(np.clip(cos_a, -1.0, 1.0)))
 
 
 def get_closest_body(body_frame):
@@ -127,18 +108,19 @@ def kinect_data_acquisition_worker():
 
 
 def detect_hand_worker():
-    """【2. 舉手偵測 Worker】event-driven，有新幀才處理"""
-    global isHandUp
-    hand_states = collections.deque(maxlen=SMOOTH_WINDOW)
+    """【2. 手勢偵測 Worker】偵測舉雙手 / 舉單手，event-driven"""
+    global isBothHandsUp, isSingleHandUp
+    both_hands_states = collections.deque(maxlen=SMOOTH_WINDOW)
+    single_hand_states = collections.deque(maxlen=SMOOTH_WINDOW)
 
     while True:
         with skeleton_condition:
-            # 等待新幀（最多 200ms 避免永久阻塞）
             skeleton_condition.wait(timeout=0.2)
             skeleton = latest_skeleton_3d.copy() if latest_skeleton_3d is not None else None
 
         if skeleton is None:
-            hand_states.clear()
+            both_hands_states.clear()
+            single_hand_states.clear()
             continue
 
         try:
@@ -147,77 +129,38 @@ def detect_hand_worker():
             l_hand_y = skeleton[pykinect.K4ABT_JOINT_HAND_LEFT, 1]
             r_hand_y = skeleton[pykinect.K4ABT_JOINT_HAND_RIGHT, 1]
 
-            # 任一手高於頭部即算舉手（修正：原為 AND，要求雙手同時舉起，過於嚴格）
-            hand_up_raw = (l_hand_y < head_y) or (r_hand_y < head_y)
-            hand_states.append(hand_up_raw)
+            l_up = l_hand_y < head_y
+            r_up = r_hand_y < head_y
 
-            # 多幀確認，避免骨架雜訊造成誤觸發
-            confirmed_up = sum(hand_states) >= SMOOTH_THRESHOLD
+            # 雙手同時高於頭
+            both_hands_raw = l_up and r_up
+            # 僅一手高於頭（XOR）
+            single_hand_raw = l_up != r_up
 
-            if confirmed_up and not isHandUp:
-                isHandUp = True
-                print("✋ [Event] 偵測到舉手")
-                socketio.emit("hand_event", {"state": "up"}, namespace='/')
-            elif not confirmed_up and isHandUp:
-                isHandUp = False
-                print("🤚 [Event] 手放下了")
+            both_hands_states.append(both_hands_raw)
+            single_hand_states.append(single_hand_raw)
 
-        except Exception:
-            pass
+            confirmed_both = sum(both_hands_states) >= SMOOTH_THRESHOLD
+            confirmed_single = sum(single_hand_states) >= SMOOTH_THRESHOLD
 
+            # 舉雙手事件
+            if confirmed_both and not isBothHandsUp:
+                isBothHandsUp = True
+                print("🙌 [Event] 偵測到舉雙手")
+                socketio.emit("both_hands_event", {"state": "up"}, namespace='/')
+            elif not confirmed_both and isBothHandsUp:
+                isBothHandsUp = False
+                print("🤚 [Event] 雙手放下")
 
-def detect_kick_worker():
-    """【3. 踢腿偵測 Worker】event-driven，有新幀才處理"""
-    global isKicking
-    kick_states = collections.deque(maxlen=SMOOTH_WINDOW)
-    last_log_time = time.time()
-
-    while True:
-        with skeleton_condition:
-            skeleton_condition.wait(timeout=0.2)
-            skeleton = latest_skeleton_3d.copy() if latest_skeleton_3d is not None else None
-
-        if skeleton is None:
-            kick_states.clear()
-            continue
-
-        try:
-            # Y 軸向下為正；踢腿時腳踝上升，ankle_y 減小，dist 縮小
-            hip_y = skeleton[pykinect.K4ABT_JOINT_HIP_LEFT, 1]
-            l_ankle_y = skeleton[pykinect.K4ABT_JOINT_ANKLE_LEFT, 1]
-            r_ankle_y = skeleton[pykinect.K4ABT_JOINT_ANKLE_RIGHT, 1]
-
-            l_leg_dist = l_ankle_y - hip_y
-            r_leg_dist = r_ankle_y - hip_y
-
-            l_knee_angle = calc_knee_angle(skeleton, 'left')
-            r_knee_angle = calc_knee_angle(skeleton, 'right')
-
-            # 定時輸出 Debug Log
-            if time.time() - last_log_time > 2.0:
-                print(f"DEBUG [Kick] 左腿: dist={l_leg_dist:.0f}mm angle={l_knee_angle:.0f}° / 右腿: dist={r_leg_dist:.0f}mm angle={r_knee_angle:.0f}°")
-                last_log_time = time.time()
-
-            # 前踢判斷：腳踝高於門檻 AND 膝蓋打直（過濾高抬腿）
-            l_kick = (l_leg_dist < KICK_REL_THRESHOLD) and (l_knee_angle > KNEE_ANGLE_THRESHOLD)
-            r_kick = (r_leg_dist < KICK_REL_THRESHOLD) and (r_knee_angle > KNEE_ANGLE_THRESHOLD)
-            kick_raw = l_kick or r_kick
-            kick_states.append(kick_raw)
-
-            # 多幀確認踢腿
-            confirmed_kick = sum(kick_states) >= SMOOTH_THRESHOLD
-
-            if confirmed_kick and not isKicking:
-                isKicking = True
-                leg = "left" if l_kick else "right"
-                kicking_dist = l_leg_dist if l_kick else r_leg_dist
-                kicking_angle = l_knee_angle if l_kick else r_knee_angle
-                print(f"🦵 [Event] 偵測到前踢！({leg}) 距離: {kicking_dist:.0f}mm 膝蓋角: {kicking_angle:.0f}°")
-                socketio.emit("kick_event", {"leg": leg}, namespace='/')
-            elif not confirmed_kick and isKicking:
-                if l_leg_dist > KICK_RESET_THRESHOLD and r_leg_dist > KICK_RESET_THRESHOLD:
-                    isKicking = False
-                    print("✅ [Event] 雙腳已著地/重置")
+            # 舉單手事件（雙手同時舉起時不觸發）
+            if confirmed_single and not confirmed_both and not isSingleHandUp:
+                isSingleHandUp = True
+                side = "left" if l_up else "right"
+                print(f"✋ [Event] 偵測到舉單手 ({side})")
+                socketio.emit("single_hand_event", {"side": side}, namespace='/')
+            elif (not confirmed_single or confirmed_both) and isSingleHandUp:
+                isSingleHandUp = False
+                print("🤚 [Event] 單手放下")
 
         except Exception:
             pass
@@ -227,7 +170,6 @@ if __name__ == "__main__":
     workers = [
         threading.Thread(target=kinect_data_acquisition_worker, daemon=True),
         threading.Thread(target=detect_hand_worker, daemon=True),
-        threading.Thread(target=detect_kick_worker, daemon=True),
     ]
 
     for t in workers:
@@ -235,7 +177,6 @@ if __name__ == "__main__":
 
     print("🚀 Kinect 多功能伺服器已啟動...")
     print("- 執行緒 1: 資料獲取 (Condition 保護，notify_all 驅動偵測)")
-    print("- 執行緒 2: 舉手偵測 (任一手 OR 邏輯 + 5 幀滑動平滑)")
-    print("- 執行緒 3: 踢腿偵測 (5 幀滑動平滑 + 縮小滯後帶)")
+    print("- 執行緒 2: 手勢偵測 (舉雙手 / 舉單手，5 幀滑動平滑)")
 
     socketio.run(app, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)
