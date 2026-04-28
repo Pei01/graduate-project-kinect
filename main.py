@@ -60,6 +60,22 @@ def get_closest_body(body_frame):
     return closest_id
 
 
+def _has_valid_handle(obj):
+    """檢查 pykinect_azure 物件的底層 C handle 是否非 NULL。
+    pykinect_azure 的 VERIFY 失敗時不會 raise，只會回傳一個 handle=0x0 的物件，
+    必須主動驗證以避免後續 C API 拿到 NULL pointer。"""
+    if obj is None:
+        return False
+    handle = getattr(obj, '_handle', None)
+    if handle is None:
+        handle = getattr(obj, 'handle', None)
+    if handle is None:
+        return False
+    # ctypes c_void_p 的 NULL 表示為 .value == None 或 0；整數 0 也視為 NULL
+    value = getattr(handle, 'value', handle)
+    return bool(value)
+
+
 def kinect_data_acquisition_worker():
     """【1. 資料獲取 Worker】負責抓取硬體數據，並通知偵測 workers"""
     global latest_skeleton_3d
@@ -79,16 +95,52 @@ def kinect_data_acquisition_worker():
         body_frame = None
         try:
             capture = device.update()
-
-            # 確認深度影像有效再送入 body tracker，避免 null handle 崩潰
-            ret, depth_img = capture.get_depth_image()
-            if not ret or depth_img is None:
+            if not _has_valid_handle(capture):
                 consecutive_errors += 1
                 if consecutive_errors % 30 == 1:
-                    print(f"⚠️ [Acquisition] 深度影像無效，略過此幀（連續 {consecutive_errors} 次）")
+                    print(f"⚠️ [Acquisition] capture handle 無效，略過此幀（連續 {consecutive_errors} 次）")
+                time.sleep(0.01)
                 continue
 
-            body_frame = bodyTracker.update(capture)
+            # 直接驗證深度影像物件的 C handle，比 to_numpy() 路徑更可靠
+            # 避免 capture 帶著 NULL depth handle 進到 body tracker 觸發 image_get_buffer 錯誤
+            depth_valid = False
+            try:
+                if hasattr(capture, 'get_depth_image_object'):
+                    depth_obj = capture.get_depth_image_object()
+                    depth_valid = _has_valid_handle(depth_obj)
+                else:
+                    ret, depth_img = capture.get_depth_image()
+                    depth_valid = bool(ret) and depth_img is not None
+            except Exception:
+                depth_valid = False
+
+            if not depth_valid:
+                consecutive_errors += 1
+                if consecutive_errors % 30 == 1:
+                    print(f"⚠️ [Acquisition] 深度影像 handle 為 NULL，略過此幀（連續 {consecutive_errors} 次）")
+                time.sleep(0.01)
+                continue
+
+            # body tracker 內部 enqueue 仍可能因 SDK race 拿到 NULL depth handle 而失敗，
+            # 而 pykinect_azure 的 VERIFY 不會 raise（只 print_stack），
+            # 失敗時會回傳 handle=0x0 的 Frame，後續操作會持續觸發 k4a_image_t 0x0 錯誤。
+            try:
+                body_frame = bodyTracker.update(capture)
+            except Exception as track_err:
+                consecutive_errors += 1
+                if consecutive_errors % 30 == 1:
+                    print(f"⚠️ [Acquisition] body tracker update 例外（連續 {consecutive_errors} 次）: {track_err}")
+                time.sleep(0.05)
+                continue
+
+            if not _has_valid_handle(body_frame):
+                consecutive_errors += 1
+                if consecutive_errors % 30 == 1:
+                    print(f"⚠️ [Acquisition] body tracker 回傳無效 frame（內部 enqueue 失敗，連續 {consecutive_errors} 次）")
+                time.sleep(0.05)
+                continue
+
             consecutive_errors = 0
 
             body_id = get_closest_body(body_frame)
