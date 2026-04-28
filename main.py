@@ -65,6 +65,7 @@ def kinect_data_acquisition_worker():
     global latest_skeleton_3d
     last_status = False
     last_frame_time = 0.0
+    consecutive_errors = 0
 
     while True:
         # 幀率限制：確保不超過 30fps，避免 body tracker enqueue 佇列滿溢
@@ -78,7 +79,18 @@ def kinect_data_acquisition_worker():
         body_frame = None
         try:
             capture = device.update()
+
+            # 確認深度影像有效再送入 body tracker，避免 null handle 崩潰
+            ret, depth_img = capture.get_depth_image()
+            if not ret or depth_img is None:
+                consecutive_errors += 1
+                if consecutive_errors % 30 == 1:
+                    print(f"⚠️ [Acquisition] 深度影像無效，略過此幀（連續 {consecutive_errors} 次）")
+                continue
+
             body_frame = bodyTracker.update(capture)
+            consecutive_errors = 0
+
             body_id = get_closest_body(body_frame)
 
             with skeleton_condition:
@@ -98,13 +110,27 @@ def kinect_data_acquisition_worker():
 
         except Exception as e:
             err_msg = str(e).lower()
+            consecutive_errors += 1
             if "enqueue" in err_msg or "timeout" in err_msg:
                 # body tracker 佇列滿：略過此幀，等久一點讓 GPU 消化
                 time.sleep(0.05)
-            # 其他錯誤靜默略過
+            elif "failed" in err_msg or "invalid" in err_msg or "handle" in err_msg:
+                # 無效 handle（深度影像為 null）：略過此幀
+                time.sleep(0.02)
+            else:
+                if consecutive_errors % 30 == 1:
+                    print(f"⚠️ [Acquisition] 例外錯誤（連續 {consecutive_errors} 次）: {e}")
+                time.sleep(0.02)
+            # 重置 skeleton，避免偵測 worker 使用過期資料
+            if consecutive_errors >= 10:
+                with skeleton_condition:
+                    latest_skeleton_3d = None
+                    skeleton_condition.notify_all()
         finally:
-            del capture
-            del body_frame
+            if capture is not None:
+                del capture
+            if body_frame is not None:
+                del body_frame
 
 
 def detect_hand_worker():
@@ -166,17 +192,24 @@ def detect_hand_worker():
             pass
 
 
-if __name__ == "__main__":
-    workers = [
-        threading.Thread(target=kinect_data_acquisition_worker, daemon=True),
-        threading.Thread(target=detect_hand_worker, daemon=True),
-    ]
+def start_worker_with_watchdog(target, name):
+    """啟動 worker thread，若意外死亡則自動重啟"""
+    def watchdog():
+        while True:
+            t = threading.Thread(target=target, daemon=True, name=name)
+            t.start()
+            t.join()
+            print(f"⚠️ [{name}] 執行緒意外結束，0.5 秒後重啟...")
+            time.sleep(0.5)
+    threading.Thread(target=watchdog, daemon=True, name=f"{name}-watchdog").start()
 
-    for t in workers:
-        t.start()
+
+if __name__ == "__main__":
+    start_worker_with_watchdog(kinect_data_acquisition_worker, "資料獲取")
+    start_worker_with_watchdog(detect_hand_worker, "手勢偵測")
 
     print("🚀 Kinect 多功能伺服器已啟動...")
-    print("- 執行緒 1: 資料獲取 (Condition 保護，notify_all 驅動偵測)")
-    print("- 執行緒 2: 手勢偵測 (舉雙手 / 舉單手，5 幀滑動平滑)")
+    print("- 執行緒 1: 資料獲取 (Condition 保護，notify_all 驅動偵測，watchdog 自動重啟)")
+    print("- 執行緒 2: 手勢偵測 (舉雙手 / 舉單手，5 幀滑動平滑，watchdog 自動重啟)")
 
     socketio.run(app, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)
