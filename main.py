@@ -96,10 +96,10 @@ SMOOTH_THRESHOLD = 3  # 需幾幀確認才觸發
 
 FRAME_INTERVAL = 1.0 / 30  # 幀率限制，對應設定的 30fps
 
-# 偵測範圍(mm,以 SPINE_NAVEL 判定)。預設給寬鬆值,展場校準後再寫死。
+# 偵測範圍(mm,以 SPINE_NAVEL 判定)。展場現場校準後寫死的數值。
 calibration_range = {
-    "x_min": -2000.0, "x_max": 2000.0,
-    "z_min": 500.0,   "z_max": 5000.0,
+    "x_min": -550.0, "x_max": 950.0,
+    "z_min": 500.0,  "z_max": 4650.0,
 }
 range_lock = threading.Lock()
 # 雷達畫面 emit 節流:每 N 幀送一次,30fps → 約 10Hz
