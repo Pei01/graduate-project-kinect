@@ -94,22 +94,40 @@ SMOOTH_THRESHOLD = 3  # 需幾幀確認才觸發
 
 FRAME_INTERVAL = 1.0 / 30  # 幀率限制，對應設定的 30fps
 
+# 偵測範圍(mm,以 SPINE_NAVEL 判定)。預設給寬鬆值,展場校準後再寫死。
+calibration_range = {
+    "x_min": -2000.0, "x_max": 2000.0,
+    "z_min": 500.0,   "z_max": 5000.0,
+}
+range_lock = threading.Lock()
+# 雷達畫面 emit 節流:每 N 幀送一次,30fps → 約 10Hz
+RADAR_EMIT_EVERY_N_FRAMES = 3
 
 
-def get_closest_body(body_frame):
+
+def get_closest_body(body_frame, current_range):
+    """回傳 (closest_id, all_positions)。
+    closest_id: 在 current_range 框內、SPINE_NAVEL 離 Kinect 最近的 body id;若無回 None
+    all_positions: 所有偵測到的人(含框外),供前端雷達繪製
+    """
     num_bodies = body_frame.get_num_bodies()
+    all_positions = []
     if num_bodies == 0:
-        return None
+        return None, all_positions
     min_z = float('inf')
     closest_id = None
     for body_id in range(num_bodies):
         body = body_frame.get_body(body_id)
         skeleton_3d = body.numpy()
-        spine_z = skeleton_3d[pykinect.K4ABT_JOINT_SPINE_NAVEL, 2]
-        if spine_z < min_z:
-            min_z = spine_z
+        spine = skeleton_3d[pykinect.K4ABT_JOINT_SPINE_NAVEL]
+        x, _, z = float(spine[0]), float(spine[1]), float(spine[2])
+        in_range = (current_range["x_min"] <= x <= current_range["x_max"]
+                    and current_range["z_min"] <= z <= current_range["z_max"])
+        all_positions.append({"id": int(body_id), "x": x, "z": z, "in_range": in_range})
+        if in_range and z < min_z:
+            min_z = z
             closest_id = body_id
-    return closest_id
+    return closest_id, all_positions
 
 
 def _has_valid_handle(obj):
@@ -145,6 +163,7 @@ def kinect_data_acquisition_worker():
     last_status = False
     last_frame_time = 0.0
     consecutive_errors = 0
+    radar_frame_counter = 0
 
     while True:
         # device 尚未就緒(初次失敗或剛被重建中):等待
@@ -224,7 +243,9 @@ def kinect_data_acquisition_worker():
 
             consecutive_errors = 0
 
-            body_id = get_closest_body(body_frame)
+            with range_lock:
+                current_range = dict(calibration_range)
+            body_id, all_positions = get_closest_body(body_frame, current_range)
 
             with skeleton_condition:
                 if body_id is not None:
@@ -240,6 +261,16 @@ def kinect_data_acquisition_worker():
                         last_status = False
                 # 通知所有等待的偵測 workers 有新幀到來
                 skeleton_condition.notify_all()
+
+            # 雷達畫面節流 emit:給 /calibration 校準頁面用
+            radar_frame_counter += 1
+            if radar_frame_counter >= RADAR_EMIT_EVERY_N_FRAMES:
+                radar_frame_counter = 0
+                socketio.emit("skeleton_positions", {
+                    "bodies": all_positions,
+                    "range": current_range,
+                    "active_id": int(body_id) if body_id is not None else None,
+                }, namespace='/')
 
         except Exception as e:
             err_msg = str(e).lower()
@@ -336,6 +367,27 @@ def detect_hand_worker():
 
         except Exception:
             pass
+
+
+@socketio.on("set_calibration_range")
+def _on_set_calibration_range(data):
+    """前端校準頁面拉 slider 時呼叫,即時更新偵測範圍。"""
+    if not isinstance(data, dict):
+        return
+    with range_lock:
+        for k in ("x_min", "x_max", "z_min", "z_max"):
+            if k in data:
+                try:
+                    calibration_range[k] = float(data[k])
+                except (TypeError, ValueError):
+                    pass
+
+
+@socketio.on("get_calibration_range")
+def _on_get_calibration_range():
+    """前端開啟校準頁面時取得當前範圍。"""
+    with range_lock:
+        socketio.emit("calibration_range", dict(calibration_range), namespace='/')
 
 
 def start_worker_with_watchdog(target, name):
