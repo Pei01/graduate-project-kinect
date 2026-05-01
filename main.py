@@ -6,6 +6,8 @@ import collections
 import time
 import numpy as np
 import math
+import base64
+import cv2
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -271,6 +273,23 @@ def kinect_data_acquisition_worker():
                     "range": current_range,
                     "active_id": int(body_id) if body_id is not None else None,
                 }, namespace='/')
+
+                # 同步 emit 一張縮圖彩色預覽,給校準頁直接看 Kinect 視角
+                try:
+                    ret_c, color_img = capture.get_color_image()
+                    if ret_c and color_img is not None:
+                        small = cv2.resize(color_img, (640, 360))
+                        if small.ndim == 3 and small.shape[2] == 4:
+                            small = cv2.cvtColor(small, cv2.COLOR_BGRA2BGR)
+                        ok_enc, buf = cv2.imencode(
+                            ".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 60]
+                        )
+                        if ok_enc:
+                            b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+                            socketio.emit("color_frame", {"jpeg_b64": b64}, namespace='/')
+                except Exception:
+                    # 預覽失敗不影響主流程
+                    pass
 
         except Exception as e:
             err_msg = str(e).lower()

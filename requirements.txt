@@ -7,3 +7,4 @@ libusb-package
 flask-socketio
 numpy
 eventlet
+opencv-python
