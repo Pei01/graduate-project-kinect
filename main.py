@@ -22,12 +22,64 @@ device_config.color_resolution = pykinect.K4A_COLOR_RESOLUTION_720P
 device_config.depth_mode = pykinect.K4A_DEPTH_MODE_NFOV_2X2BINNED
 device_config.camera_fps = pykinect.K4A_FRAMES_PER_SECOND_30
 
-# 啟動裝置
-try:
-    device = pykinect.start_device(config=device_config)
-    bodyTracker = pykinect.start_body_tracker(pykinect.K4ABT_TRACKER_PROCESSING_MODE_GPU)
-except Exception as e:
-    print(f"❌ 硬體啟動失敗: {e}")
+# 裝置 handle 改為可變全域,讓 acquisition worker 能在 USB 斷線後完整重建
+device = None
+bodyTracker = None
+device_lock = threading.Lock()
+
+# 連續錯誤達到此閾值時觸發 device 完整重建(30fps 下約 2 秒)
+DEVICE_REINIT_THRESHOLD = 60
+# 重建失敗後的退避秒數,避免持續打 USB 子系統
+DEVICE_REINIT_BACKOFF = 2.0
+
+
+def _safe_close_device():
+    """盡力釋放當前的 device / bodyTracker,任何例外都吞掉。
+    pykinect_azure 在 handle 已壞掉時 close 也可能丟例外,但我們的目標就是丟掉它。"""
+    global device, bodyTracker
+    if bodyTracker is not None:
+        for fn_name in ("destroy", "shutdown", "close"):
+            fn = getattr(bodyTracker, fn_name, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+                break
+        bodyTracker = None
+    if device is not None:
+        for fn_name in ("close", "stop_cameras"):
+            fn = getattr(device, fn_name, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+        device = None
+
+
+def init_kinect_device():
+    """(重新)建立 device 與 body tracker。成功回傳 True。
+    呼叫前會先把舊的 handle 釋放,避免 SDK 內部 device context 殘留。"""
+    global device, bodyTracker
+    with device_lock:
+        _safe_close_device()
+        # 給 USB 子系統一點時間重新枚舉裝置
+        time.sleep(1.0)
+        try:
+            device = pykinect.start_device(config=device_config)
+            bodyTracker = pykinect.start_body_tracker(pykinect.K4ABT_TRACKER_PROCESSING_MODE_GPU)
+            print("✅ [Device] Kinect 裝置已就緒")
+            return True
+        except Exception as e:
+            print(f"❌ [Device] 硬體啟動失敗: {e}")
+            device = None
+            bodyTracker = None
+            return False
+
+
+# 啟動裝置(初次)
+init_kinect_device()
 
 # 骨架數據共享（Condition 保護，解決 race condition 與 GIL 競爭）
 skeleton_condition = threading.Condition()
@@ -76,6 +128,17 @@ def _has_valid_handle(obj):
     return bool(value)
 
 
+def _trigger_device_reinit(reason):
+    """連續錯誤太久時呼叫:完整重建 device,避免一直拿著壞 handle 重試。"""
+    print(f"🔄 [Device] 偵測到裝置失聯({reason}),嘗試完整重建 Kinect...")
+    with skeleton_condition:
+        global latest_skeleton_3d
+        latest_skeleton_3d = None
+        skeleton_condition.notify_all()
+    if not init_kinect_device():
+        time.sleep(DEVICE_REINIT_BACKOFF)
+
+
 def kinect_data_acquisition_worker():
     """【1. 資料獲取 Worker】負責抓取硬體數據，並通知偵測 workers"""
     global latest_skeleton_3d
@@ -84,6 +147,12 @@ def kinect_data_acquisition_worker():
     consecutive_errors = 0
 
     while True:
+        # device 尚未就緒(初次失敗或剛被重建中):等待
+        if device is None or bodyTracker is None:
+            if not init_kinect_device():
+                time.sleep(DEVICE_REINIT_BACKOFF)
+                continue
+
         # 幀率限制：確保不超過 30fps，避免 body tracker enqueue 佇列滿溢
         now = time.time()
         elapsed = now - last_frame_time
@@ -99,6 +168,10 @@ def kinect_data_acquisition_worker():
                 consecutive_errors += 1
                 if consecutive_errors % 30 == 1:
                     print(f"⚠️ [Acquisition] capture handle 無效，略過此幀（連續 {consecutive_errors} 次）")
+                if consecutive_errors >= DEVICE_REINIT_THRESHOLD:
+                    _trigger_device_reinit("capture handle 持續無效")
+                    consecutive_errors = 0
+                    continue
                 time.sleep(0.01)
                 continue
 
@@ -119,6 +192,10 @@ def kinect_data_acquisition_worker():
                 consecutive_errors += 1
                 if consecutive_errors % 30 == 1:
                     print(f"⚠️ [Acquisition] 深度影像 handle 為 NULL，略過此幀（連續 {consecutive_errors} 次）")
+                if consecutive_errors >= DEVICE_REINIT_THRESHOLD:
+                    _trigger_device_reinit("深度影像 handle 持續為 NULL")
+                    consecutive_errors = 0
+                    continue
                 time.sleep(0.01)
                 continue
 
@@ -138,6 +215,10 @@ def kinect_data_acquisition_worker():
                 consecutive_errors += 1
                 if consecutive_errors % 30 == 1:
                     print(f"⚠️ [Acquisition] body tracker 回傳無效 frame（內部 enqueue 失敗，連續 {consecutive_errors} 次）")
+                if consecutive_errors >= DEVICE_REINIT_THRESHOLD:
+                    _trigger_device_reinit("body tracker 持續回傳無效 frame")
+                    consecutive_errors = 0
+                    continue
                 time.sleep(0.05)
                 continue
 
@@ -163,6 +244,15 @@ def kinect_data_acquisition_worker():
         except Exception as e:
             err_msg = str(e).lower()
             consecutive_errors += 1
+            # 「device disconnected」「get_capture」「k4a_device」這類訊息代表 USB 已斷,
+            # 不必等 60 幀,直接重建。
+            hard_lost = any(s in err_msg for s in (
+                "disconnected", "get_capture", "k4a_device", "device lost", "io_failure"
+            ))
+            if hard_lost:
+                _trigger_device_reinit(f"硬體例外: {e}")
+                consecutive_errors = 0
+                continue
             if "enqueue" in err_msg or "timeout" in err_msg:
                 # body tracker 佇列滿：略過此幀，等久一點讓 GPU 消化
                 time.sleep(0.05)
@@ -178,6 +268,10 @@ def kinect_data_acquisition_worker():
                 with skeleton_condition:
                     latest_skeleton_3d = None
                     skeleton_condition.notify_all()
+            # 累積錯誤太多仍救不回來時:強制重建裝置
+            if consecutive_errors >= DEVICE_REINIT_THRESHOLD:
+                _trigger_device_reinit(f"連續 {consecutive_errors} 次例外")
+                consecutive_errors = 0
         finally:
             if capture is not None:
                 del capture
