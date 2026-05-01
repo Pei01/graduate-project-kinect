@@ -94,9 +94,16 @@ SMOOTH_THRESHOLD = 3  # 需幾幀確認才觸發
 
 FRAME_INTERVAL = 1.0 / 30  # 幀率限制，對應設定的 30fps
 
+# 偵測範圍(mm,以 SPINE_NAVEL 判定),展場校準後寫死。需重新校準請切到
+# feat/kinect-range-calibration 分支用 /calibration 頁面拉 slider。
+CALIBRATION_RANGE = {
+    "x_min": -550.0, "x_max": 950.0,
+    "z_min": 500.0,  "z_max": 4650.0,
+}
 
 
 def get_closest_body(body_frame):
+    """回傳框內 SPINE_NAVEL 離 Kinect 最近的 body id;框外的人不被選為目標。"""
     num_bodies = body_frame.get_num_bodies()
     if num_bodies == 0:
         return None
@@ -105,9 +112,13 @@ def get_closest_body(body_frame):
     for body_id in range(num_bodies):
         body = body_frame.get_body(body_id)
         skeleton_3d = body.numpy()
-        spine_z = skeleton_3d[pykinect.K4ABT_JOINT_SPINE_NAVEL, 2]
-        if spine_z < min_z:
-            min_z = spine_z
+        spine = skeleton_3d[pykinect.K4ABT_JOINT_SPINE_NAVEL]
+        x, z = float(spine[0]), float(spine[2])
+        if not (CALIBRATION_RANGE["x_min"] <= x <= CALIBRATION_RANGE["x_max"]
+                and CALIBRATION_RANGE["z_min"] <= z <= CALIBRATION_RANGE["z_max"]):
+            continue
+        if z < min_z:
+            min_z = z
             closest_id = body_id
     return closest_id
 
